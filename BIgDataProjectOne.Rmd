@@ -1,0 +1,118 @@
+---
+title: "Big Data Project 1"
+author: "James Cevallos and Yash Huilgol"
+date: "2/16/2021"
+output: pdf_document
+---
+
+# Big Data Project One 
+
+## Data Import
+```{r data import, include=TRUE}
+#import all csv files 
+library(readr)
+setwd("~/Desktop/HeritageHealth")
+sampleTable <- read_csv("SampleEntry.csv")
+setwd("~/Desktop/HeritageHealth/HHP_release3")
+#used for prediction 
+claims <- read_csv("Claims.csv") 
+drugCount <- read_csv("DrugCount.csv")
+labCount <- read_csv("LabCount.csv")
+members <- read_csv("Members.csv")
+#training data
+daysInHospital_Y2 <- read_csv("DaysInHospital_Y2.csv")
+#testing data
+daysInHospital_Y3 <- read_csv("DaysInHospital_Y3.csv")
+#descriptor tables not super helpful
+lookUpPrimaryConditionGroup <- read_csv("Lookup PrimaryConditionGroup.csv")
+lookUpProcedureGroup <- read_csv("Lookup ProcedureGroup.csv")
+#not sure what this table is used for
+target <- read_csv("Target.csv")
+```
+
+The goal of this project is to create an algorithm that will predict how many days a patient will spend in a hospital. 
+
+To start out the project, we first calculated summary statistics and created a histogram to visualize the number of members who spent particular days in the hospital for Year 2. 
+```{r}
+library(dplyr)
+library(ggplot2)
+
+#summary statistics, not included in final report
+count_data <- count(daysInHospital_Y2, DaysInHospital)
+summary(daysInHospital_Y2$DaysInHospital)
+
+#plot including 0 hospital stays, not included in final report 
+temp_plot <- ggplot(daysInHospital_Y2, aes(DaysInHospital)) + geom_histogram(binwidth = .5, bins = 15)
+
+#plot excluding 0 hospital stays, included in final report 
+hospital_data_at_least_one_day <- daysInHospital_Y2 %>% filter(DaysInHospital > 0)
+a <- ggplot(hospital_data_at_least_one_day , aes(DaysInHospital)) + geom_histogram(binwidth = .5, bins = 15) + scale_x_continuous(breaks= seq(0,15,1)) + labs(title = "Count of Total Number of Members by Days in Hospital") + xlab("Days in Hospital") + ylab("Number of Members") + theme(plot.title = element_text(hjust = 0.5))
+a
+
+# code to save plot to desktop
+#ggsave(filename = "figure_1.jpeg", plot= a, device = "jpeg", path = "~/Desktop/")
+
+
+```
+In order to predict the number of days a patient will stay in the hospital, we decided that we'd like to capture data from the following five variables: 
+
+1) The total number of claims during year 1 by member 
+2) The total number of labs during year 1 by member 
+3) The total number of prescriptions during year 1 by member 
+4) The age at first claim for each member 
+5) The total number of days in the hospital during year 2 by member 
+
+To capture the data, we created a table with all this information by filtering and merging data from five tables: claims, drugCount, labCount, members, and daysInHospital_Y2
+
+```{r}
+#import dplyr library
+library(dplyr)
+
+#create a table with all the unique claims a member made for year one
+year_1_claims <- claims %>% filter(Year == "Y1") %>% select(MemberID) %>% count(MemberID) %>% rename(number_of_claims=n)
+
+#create a table of all the prescriptions a member has had filled for year one (Note all 7+ <- 7)
+by_memberdrugs <- drugCount %>% filter(Year == "Y1") 
+by_memberdrugs$DrugCount[by_memberdrugs$DrugCount == "7+"] <- "7"
+by_memberdrugs$DrugCount <- as.numeric(by_memberdrugs$DrugCount)
+by_memberdrugs <- group_by(by_memberdrugs, MemberID) %>% summarise(total_prescriptions_filled = sum(DrugCount))
+year_1_drugs <- by_memberdrugs
+
+#create a table of all the labs a member has completed for year one (Note all 10+ <- 10)
+by_memberlabs <- labCount %>% filter(Year == "Y1")
+by_memberlabs$LabCount[by_memberlabs$LabCount == "10+"] <- 10
+by_memberlabs$LabCount <- as.numeric(by_memberlabs$LabCount)
+by_memberlabs <- group_by(by_memberlabs, MemberID) %>% summarise(total_labs = sum(LabCount))
+year_1_labs <- by_memberlabs
+
+#merge tables together BEFORE CONTINUING MAKE SURE TO FILL IN NAs
+
+temp_1 <- full_join(year_1_claims,year_1_drugs, by = "MemberID")
+temp_1[is.na(temp_1)] <- 0
+temp_1$total_prescriptions_filled <- as.integer(temp_1$total_prescriptions_filled)
+
+temp_2 <- full_join(temp_1, year_1_labs, by = "MemberID")
+temp_2[is.na(temp_2)] <- 0
+
+temp_3 <- full_join(temp_2, members, by = "MemberID")
+temp_3 <- na.omit(temp_3)
+
+final_table <- full_join(temp_3, daysInHospital_Y2, by = "MemberID")
+final_table <- select(final_table, -ClaimsTruncated)
+final_table <- na.omit(final_table) #not sure if this is the best thing to do
+```
+
+Next, I plotted the data to visually inspect it in order to build our model 
+
+```{r}
+
+#make ints
+final_table$number_of_claims <- as.integer(final_table$number_of_claims)
+final_table$DaysInHospital <- as.integer(final_table$DaysInHospital)
+
+ggplot(data=final_table, mapping = aes(x=total_prescriptions_filled, y=DaysInHospital)) + geom_point(size = 1, shape = 1) + xlim(0, 50) + ylim(0,20) 
+
+
+
+
+```
