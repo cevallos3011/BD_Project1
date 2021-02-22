@@ -1,0 +1,241 @@
+---
+title: "Big Data Project 1"
+author: "James Cevallos and Yash Huilgol"
+date: "2/16/2021"
+output: pdf_document
+---
+
+# Big Data Project One 
+
+## Data Import
+```{r data import, include=TRUE}
+#import all csv files 
+library(readr)
+setwd("~/Desktop/HeritageHealth")
+sampleTable <- read_csv("SampleEntry.csv")
+setwd("~/Desktop/HeritageHealth/HHP_release3")
+#used for prediction 
+claims <- read_csv("Claims.csv") 
+drugCount <- read_csv("DrugCount.csv")
+labCount <- read_csv("LabCount.csv")
+members <- read_csv("Members.csv")
+#training data
+daysInHospital_Y2 <- read_csv("DaysInHospital_Y2.csv")
+#testing data
+daysInHospital_Y3 <- read_csv("DaysInHospital_Y3.csv")
+#descriptor tables not super helpful
+lookUpPrimaryConditionGroup <- read_csv("Lookup PrimaryConditionGroup.csv")
+lookUpProcedureGroup <- read_csv("Lookup ProcedureGroup.csv")
+#not sure what this table is used for
+target <- read_csv("Target.csv")
+```
+
+## Data Summary and Processing 
+
+The goal of this project is to create an algorithm that will predict how many days a patient will spend in a hospital. 
+
+To start out the project, we first calculated summary statistics and created a histogram to visualize the number of members who spent particular days in the hospital for Year 2. 
+```{r}
+library(dplyr)
+library(ggplot2)
+
+#summary statistics, not included in final report
+count_data <- count(daysInHospital_Y2, DaysInHospital)
+summary(daysInHospital_Y2$DaysInHospital)
+
+#plot including 0 hospital stays, not included in final report 
+temp_plot <- ggplot(daysInHospital_Y2, aes(DaysInHospital)) + geom_histogram(binwidth = .5, bins = 15)
+
+#plot excluding 0 hospital stays, included in final report 
+hospital_data_at_least_one_day <- daysInHospital_Y2 %>% filter(DaysInHospital > 0)
+a <- ggplot(hospital_data_at_least_one_day , aes(DaysInHospital)) + geom_histogram(binwidth = .5, bins = 15) + scale_x_continuous(breaks= seq(0,15,1)) + labs(title = "Count of Total Number of Members by Days in Hospital") + xlab("Days in Hospital") + ylab("Number of Members") + theme(plot.title = element_text(hjust = 0.5))
+a
+
+# code to save plot to desktop
+#ggsave(filename = "figure_1.jpeg", plot= a, device = "jpeg", path = "~/Desktop/")
+
+
+```
+In order to predict the number of days a patient will stay in the hospital, we decided that we'd like to capture data from the following five variables: 
+
+1) The total number of claims during year 1 by member 
+2) The total number of labs during year 1 by member 
+3) The total number of prescriptions during year 1 by member 
+4) The age at first claim for each member 
+5) The total number of days in the hospital during year 2 by member 
+
+To capture the data, we created a table with all this information by filtering and merging data from five tables: claims, drugCount, labCount, members, and daysInHospital_Y2
+
+```{r}
+#import dplyr library
+library(dplyr)
+
+#create a table with all the unique claims a member made for year one
+year_1_claims <- claims %>% filter(Year == "Y1") %>% select(MemberID) %>% count(MemberID) %>% rename(number_of_claims=n)
+
+#create a table of all the prescriptions a member has had filled for year one (Note all 7+ <- 7)
+by_memberdrugs <- drugCount %>% filter(Year == "Y1") 
+by_memberdrugs$DrugCount[by_memberdrugs$DrugCount == "7+"] <- "7"
+by_memberdrugs$DrugCount <- as.numeric(by_memberdrugs$DrugCount)
+by_memberdrugs <- group_by(by_memberdrugs, MemberID) %>% summarise(total_prescriptions_filled = sum(DrugCount))
+year_1_drugs <- by_memberdrugs
+
+#create a table of all the labs a member has completed for year one (Note all 10+ <- 10)
+by_memberlabs <- labCount %>% filter(Year == "Y1")
+by_memberlabs$LabCount[by_memberlabs$LabCount == "10+"] <- 10
+by_memberlabs$LabCount <- as.numeric(by_memberlabs$LabCount)
+by_memberlabs <- group_by(by_memberlabs, MemberID) %>% summarise(total_labs = sum(LabCount))
+year_1_labs <- by_memberlabs
+
+#merge tables
+
+temp_1 <- full_join(year_1_claims,year_1_drugs, by = "MemberID")
+temp_1[is.na(temp_1)] <- 0
+temp_1$total_prescriptions_filled <- as.integer(temp_1$total_prescriptions_filled)
+
+temp_2 <- full_join(temp_1, year_1_labs, by = "MemberID")
+temp_2[is.na(temp_2)] <- 0
+
+temp_3 <- full_join(temp_2, members, by = "MemberID")
+temp_3 <- na.omit(temp_3)
+
+final_table <- full_join(temp_3, daysInHospital_Y2, by = "MemberID")
+final_table <- select(final_table, -ClaimsTruncated)
+final_table <- na.omit(final_table) #not sure if this is the best thing to do
+
+
+#creation of personal table
+
+pers_table <- full_join(claims, daysInHospital_Y2, by ="MemberID")
+names(pers_table)
+pers_table <- pers_table %>% filter(!is.na(LengthOfStay)) %>% filter(Year == "Y1")
+pers_table <- pers_table %>% select(MemberID, Specialty, PlaceSvc, CharlsonIndex, LengthOfStay)
+pers_table <- na.omit(pers_table)
+pers_table <- pers_table %>% mutate(copy = LengthOfStay)
+pers_table$copy[pers_table$copy != "4- 8 weeks"] <- 0
+pers_table$copy[pers_table$copy == "4- 8 weeks"] <- 1
+person_table <- rename(pers_table, longest_stay = copy)
+```
+
+## Data Analysis 
+
+### Project Question 
+Now, we perform a multiple linear regression. 
+
+```{r}
+#check structure of final_table
+str(final_table)
+
+#Change Age at First Claim to Factor
+regression_table <- final_table
+regression_table$AgeAtFirstClaim <- as.factor(regression_table$AgeAtFirstClaim)
+regression_table$AgeAtFirstClaim <- relevel(regression_table$AgeAtFirstClaim, ref = "0-9")
+```
+
+```{r}
+library(stargazer)
+
+multiple_linear_regression <- lm(DaysInHospital ~ number_of_claims + total_prescriptions_filled +  total_labs +  AgeAtFirstClaim, data = regression_table)
+summary(multiple_linear_regression) 
+
+#stargazer(multiple_linear_regression, type = "text", out ="fit_lm.txt")
+```
+Based on the results listed above, we see that the model we created above does a poor job predicting days in the hospital. The Multiple R squared value is extremely low; just .05191. This suggests that only 5% of the data can be explained by the model we created. In other words, the model we created does a poor job explaining the variation of days in the hospital. The F statistic and the P value test the null hypothesis that all the coefficients in our model are 0. Through our p value, it is clear that the coefficients of each of the covariates in our model are not 0. The residual standard error, which is an approximation of how far the observed values and expected values from the model are is 1.389 which suggests a relatively large difference. 
+
+The intercept estimate, which is only .05, suggests that the intercept of the best fit line from our model when all the coefficients are 0, is .05. In other words, when an individual files 0 claims, 0 prescriptions, 0 lab values, and their age at first claim is 0-9, they are predicted to have essentially 0 days in the hospital. This is sensible in the context of what we would expect to find for someone that has relatively little health issues and would not likely be hospitalized. From each of the p values of the coefficients, we see that there presence is helpful in predicting hospitalization, except for Age at first claims that occur from ages 10-19 and 60 to 69. 
+
+```{r}
+cor(final_table$number_of_claims, final_table$total_prescriptions_filled, method = "pearson") 
+
+cor(final_table$number_of_claims, final_table$total_labs, method = "pearson") 
+
+cor(final_table$total_labs, final_table$total_prescriptions_filled, method = "pearson")
+```
+An analysis of the pearson correlation statistics of the numerical variables in the model suggests that the effects of the variables are somewhat tied together.
+
+```{r}
+confint(multiple_linear_regression, conf.level =0.95)
+```
+An analysis of the confidence interval of our covariates will demonstrate the range that we are 95% confident our coefficients lie within. 
+```{r}
+a <- plot(multiple_linear_regression)
+
+jpeg()
+```
+When we perform a linear regression, we operate under a certain set of assumptions. We assume that the dependent values are independent of X, the Y values can be expressed as a linear function of the X variable, that the variations of observations around the regression line is constant, and for a given value of X, the Y values are normally distributed! 
+
+An examination of plots of the residuals can help us evaluate these assumptions. The plots listed above demonstrate that our model underapproximates the prediction of hospital days and that we violate several of the model assumptions made above. In a healthy model, the residuals vs fitted figured should demonstrate that the residuals would be both above and below the red line. In our plot, we see that small values of X have large residual values and as X increases the residuals decrease.  The QQ plot would show a straight horizantal line signifying a normal distribution of the residuals. 
+
+
+### Personal Question 
+Now, we perform a multiple linear regression. 
+
+```{r}
+#check structure of final_table
+str(person_table)
+
+table(person_table$CharlsonIndex)
+
+#Change Variables to factor if necessary
+person_table$Specialty <- as.factor(person_table$Specialty) %>% relevel(ref = "General Practice")
+person_table$PlaceSvc <- as.factor(person_table$PlaceSvc) %>% relevel(ref = "Home")
+person_table$CharlsonIndex <- as.factor(person_table$CharlsonIndex) 
+person_table$longest_stay <- as.numeric(person_table$longest_stay)
+
+```
+
+```{r}
+library(stargazer)
+
+logistic_regression <- glm(longest_stay ~ Specialty + PlaceSvc + CharlsonIndex, data = person_table, family = "binomial")
+summary(logistic_regression) 
+
+#stargazer(logistic_regression, type = "html", out ="log_regression.html")
+```
+
+
+
+## Extra Work 
+
+In order to use better understand the characteristics of the data, we created these plots that statified by the number of days in the hospital. 
+
+```{r}
+#Claims by Member by Days in Hospital
+claims_by_dayInHospital <- final_table %>% group_by(DaysInHospital, number_of_claims) %>% summarise(total_claims_by_dayInHospital = sum(number_of_claims))
+
+figure_claims_by_dayInHospital <- ggplot(data = claims_by_dayInHospital, mapping = aes(x= number_of_claims, y =total_claims_by_dayInHospital)) + geom_point(size = 1, shape = 1, alpha =.3) + facet_wrap(~DaysInHospital) + scale_x_continuous(breaks= seq(0,55,10), limits = c(0,55)) + ylim(0,750) + labs(title = "Claims by Member by Days in Hospital") + xlab("Number of Claims") + ylab("Number of Members") + theme(plot.title = element_text(hjust = 0.5))
+
+#Labs by Member by Days in Hospital
+labs_by_dayInHospital <- final_table %>% group_by(DaysInHospital, total_labs) %>% summarise(total_labs_by_dayInHospital = sum(total_labs))
+
+labs_by_dayInHospital <- rename(labs_by_dayInHospital, number_of_labs = total_labs)
+labs_by_dayInHospital <- rename(labs_by_dayInHospital, number_of_members = total_labs_by_dayInHospital)
+
+figure_labs_by_DaysInHospital <- ggplot(data = labs_by_dayInHospital, mapping = aes(x= number_of_labs, y =number_of_members)) + geom_point(size = 1, shape = 1, alpha =.3) + facet_wrap(~DaysInHospital) + scale_x_continuous(breaks= seq(0,55,10), limits = c(0,55)) + ylim(0,200) + labs(title = "Labs by Member by Days in Hospital") + xlab("Number of Labs Ordered") + ylab("Number of Members") + theme(plot.title = element_text(hjust = 0.5))
+
+
+#Prescriptions by Member by Days in Hospital
+drugs_by_dayInHospital <- final_table %>% group_by(DaysInHospital, total_prescriptions_filled) %>% summarise(total_drugs_by_dayInHospital = sum(total_prescriptions_filled))
+
+drugs_by_dayInHospital <- rename(drugs_by_dayInHospital, number_of_drugs = total_prescriptions_filled)
+drugs_by_dayInHospital <- rename(drugs_by_dayInHospital, number_of_memb = total_drugs_by_dayInHospital)
+
+figure_drugs_by_DaysInHospital <- ggplot(data = drugs_by_dayInHospital, mapping = aes(x= number_of_drugs, y =number_of_memb)) + geom_point(size = 1, shape = 1, alpha =.3) + facet_wrap(~DaysInHospital) + scale_x_continuous(breaks= seq(0,100,25), limits = c(0,100)) + ylim(0,400) + labs(title = "Drugs by Member by Days in Hospital") + xlab("Number of Rx") + ylab("Number of Members") + theme(plot.title = element_text(hjust = 0.5))
+
+#Age at first claim by Member by Days in Hospital 
+age_by_dayInHospital <- final_table %>% group_by(DaysInHospital, AgeAtFirstClaim) %>% count(AgeAtFirstClaim)
+#change Age at first claim to factor
+age_by_dayInHospital$AgeAtFirstClaim <- as.factor(age_by_dayInHospital$AgeAtFirstClaim)
+
+figure_age_by_dayInHospital <- ggplot(data = age_by_dayInHospital, mapping = aes(x=AgeAtFirstClaim, y =n)) + geom_point(size = 1, shape = 1, alpha =.3) + facet_wrap(~DaysInHospital) + ylim(0,200) + labs(title = "Age at First Claim by Member by Days in Hospital") + xlab("Age at First Claim") + ylab("Number of Members") + theme(plot.title = element_text(hjust = 0.5)) + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+# code to save plots to desktop
+#ggsave(filename = "figure_claims_by_dayInHospital.jpeg", plot= figure_claims_by_dayInHospital, device = "jpeg", path = "~/Desktop/")
+
+#ggsave(filename = "figure_labs_by_DaysInHospital.jpeg", plot= figure_labs_by_DaysInHospital, device = "jpeg", path = "~/Desktop/")
+
+#ggsave(filename = "figure_drugs_by_DaysInHospital.jpeg", plot= figure_drugs_by_DaysInHospital, device = "jpeg", path = "~/Desktop/")
+
+#ggsave(filename = "figure_age_by_dayInHospital.jpeg", plot= figure_age_by_dayInHospital, device = "jpeg", path = "~/Desktop/")
+
+```
